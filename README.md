@@ -43,6 +43,24 @@ Chemical_QSAR_Web_Tool/
 
 ## Run Locally On Windows
 
+### Easiest method
+
+Double-click:
+
+```text
+run_app.bat
+```
+
+The launcher creates a local `.venv` folder, installs the required packages, starts Streamlit, and opens:
+
+```text
+http://localhost:8501
+```
+
+Keep the black launcher window open while using the app. Close the window to stop the local server.
+
+### Manual method
+
 1. Install Python 3.11 from https://www.python.org/downloads/windows/.
 2. Open PowerShell in this project folder.
 3. Create a virtual environment:
