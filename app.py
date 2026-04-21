@@ -7,7 +7,7 @@ import io
 import math
 import pickle
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -18,7 +18,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 from rdkit import Chem, DataStructs
-from rdkit.Chem import Crippen, Descriptors, Lipinski, MACCSkeys, QED, rdFingerprintGenerator, rdMolDescriptors
+from rdkit.Chem import Crippen, Descriptors, Fragments, Lipinski, MACCSkeys, QED, rdFingerprintGenerator, rdMolDescriptors
 from sklearn.base import clone
 from sklearn.decomposition import PCA
 from sklearn.ensemble import (
@@ -103,12 +103,29 @@ class DescriptorOptions:
     include_maccs: bool = False
     morgan_bits: int = 1024
     morgan_radius: int = 2
+    include_full_rdkit: bool = True
+    include_functional_groups: bool = True
+    include_element_counts: bool = True
 
 
 def clean_smiles(value: Any) -> str:
     if pd.isna(value):
         return ""
     return str(value).strip()
+
+
+def descriptor_options_to_dict(options: Any) -> dict[str, Any]:
+    """Convert old Streamlit session objects or dicts into pickle-safe options."""
+    defaults = {field.name: field.default for field in fields(DescriptorOptions)}
+    if isinstance(options, dict):
+        source = options
+    else:
+        source = {name: getattr(options, name, default) for name, default in defaults.items()}
+    return {name: source.get(name, default) for name, default in defaults.items()}
+
+
+def normalize_descriptor_options(options: Any) -> DescriptorOptions:
+    return DescriptorOptions(**descriptor_options_to_dict(options))
 
 
 def mol_from_smiles(smiles: str) -> Chem.Mol | None:
@@ -245,6 +262,66 @@ def base_descriptors(mol: Chem.Mol) -> dict[str, float]:
     }
 
 
+def safe_float(value: Any) -> float | None:
+    try:
+        numeric = float(value)
+    except Exception:
+        return None
+    if math.isfinite(numeric):
+        return numeric
+    return None
+
+
+def all_rdkit_descriptors(mol: Chem.Mol) -> dict[str, float]:
+    descriptors: dict[str, float] = {}
+    for name, func in Descriptors.descList:
+        try:
+            value = safe_float(func(mol))
+        except Exception:
+            value = None
+        if value is not None:
+            descriptors[f"RDKit_{name}"] = value
+    return descriptors
+
+
+def functional_group_descriptors(mol: Chem.Mol) -> dict[str, float]:
+    groups: dict[str, float] = {}
+    for name in dir(Fragments):
+        if not name.startswith("fr_"):
+            continue
+        func = getattr(Fragments, name)
+        if not callable(func):
+            continue
+        try:
+            value = safe_float(func(mol))
+        except Exception:
+            value = None
+        if value is not None:
+            groups[f"FG_{name[3:]}"] = value
+    return groups
+
+
+def element_descriptors(mol: Chem.Mol) -> dict[str, float]:
+    elements = ["C", "H", "N", "O", "S", "P", "F", "Cl", "Br", "I", "B", "Si"]
+    formula = rdMolDescriptors.CalcMolFormula(mol)
+    atom_counts = {symbol: 0 for symbol in elements}
+    hetero_atoms = 0
+    heavy_atoms = max(1, mol.GetNumHeavyAtoms())
+    for atom in mol.GetAtoms():
+        symbol = atom.GetSymbol()
+        if symbol in atom_counts:
+            atom_counts[symbol] += 1
+        atom_counts["H"] += int(atom.GetTotalNumHs())
+        if symbol not in {"C", "H"}:
+            hetero_atoms += 1
+    out = {"MolecularFormulaLength": float(len(formula)), "HeteroAtomCount": float(hetero_atoms), "HeteroAtomFraction": float(hetero_atoms / heavy_atoms)}
+    for symbol, count in atom_counts.items():
+        safe_symbol = symbol.replace("Cl", "Chlorine").replace("Br", "Bromine")
+        out[f"Elem_{safe_symbol}_Count"] = float(count)
+        out[f"Elem_{safe_symbol}_FractionHeavy"] = float(count / heavy_atoms)
+    return out
+
+
 def bitvect_to_dict(prefix: str, bitvect: Any, n_bits: int | None = None) -> dict[str, float]:
     if n_bits is None:
         n_bits = bitvect.GetNumBits()
@@ -254,6 +331,7 @@ def bitvect_to_dict(prefix: str, bitvect: Any, n_bits: int | None = None) -> dic
 
 
 def calculate_descriptors(df: pd.DataFrame, options: DescriptorOptions) -> pd.DataFrame:
+    options = normalize_descriptor_options(options)
     rows: list[dict[str, Any]] = []
     for _, row in df.iterrows():
         smiles = clean_smiles(row["SMILES"])
@@ -263,6 +341,12 @@ def calculate_descriptors(df: pd.DataFrame, options: DescriptorOptions) -> pd.Da
         data = row.to_dict()
         data["SMILES"] = Chem.MolToSmiles(mol)
         data.update(base_descriptors(mol))
+        if options.include_element_counts:
+            data.update(element_descriptors(mol))
+        if options.include_full_rdkit:
+            data.update(all_rdkit_descriptors(mol))
+        if options.include_functional_groups:
+            data.update(functional_group_descriptors(mol))
         if options.include_morgan:
             generator = rdFingerprintGenerator.GetMorganGenerator(radius=options.morgan_radius, fpSize=options.morgan_bits)
             fp = generator.GetFingerprint(mol)
@@ -287,12 +371,31 @@ def infer_descriptor_options(features: list[str]) -> DescriptorOptions:
         include_morgan=bool(morgan_indices),
         include_maccs=any(feature.startswith("MACCS_") for feature in features),
         morgan_bits=(max(morgan_indices) + 1) if morgan_indices else 1024,
+        include_full_rdkit=any(feature.startswith("RDKit_") for feature in features),
+        include_functional_groups=any(feature.startswith("FG_") for feature in features),
+        include_element_counts=any(feature.startswith("Elem_") for feature in features),
     )
 
 
 def descriptor_columns(df: pd.DataFrame) -> list[str]:
     protected = {"Name", "SMILES"}
     return [col for col in df.columns if col not in protected and pd.api.types.is_numeric_dtype(df[col])]
+
+
+def feature_subset(features: list[str], mode: str) -> list[str]:
+    if mode == "Core descriptors + functional groups":
+        return [f for f in features if not f.startswith(("Morgan_", "MACCS_", "RDKit_"))]
+    if mode == "All descriptors except fingerprints":
+        return [f for f in features if not f.startswith(("Morgan_", "MACCS_"))]
+    return features
+
+
+def nonzero_functional_group_table(df: pd.DataFrame) -> pd.DataFrame:
+    fg_cols = [col for col in df.columns if col.startswith("FG_") and pd.api.types.is_numeric_dtype(df[col]) and df[col].sum() > 0]
+    if not fg_cols:
+        return pd.DataFrame()
+    ordered = df[fg_cols].sum().sort_values(ascending=False).index.tolist()
+    return df[["Name", "SMILES"] + ordered]
 
 
 def drug_likeness(df: pd.DataFrame) -> pd.DataFrame:
@@ -430,7 +533,7 @@ def evaluate_models(df: pd.DataFrame, features: list[str], target: str, task_typ
             "label_encoder": encoder,
             "y_test": y_test,
             "y_pred": pred,
-            "descriptor_options": infer_descriptor_options(features),
+            "descriptor_options": descriptor_options_to_dict(infer_descriptor_options(features)),
             "domain_features": domain_features,
             "domain_min": X[domain_features].min(numeric_only=True).to_dict(),
             "domain_max": X[domain_features].max(numeric_only=True).to_dict(),
@@ -566,6 +669,16 @@ def plot_corr(df: pd.DataFrame, cols: list[str]) -> go.Figure:
     return px.imshow(corr, color_continuous_scale="RdBu_r", zmin=-1, zmax=1, template=PLOT_TEMPLATE, title="Descriptor Correlation Heatmap")
 
 
+def plot_functional_group_heatmap(df: pd.DataFrame) -> go.Figure:
+    fg_cols = [col for col in df.columns if col.startswith("FG_") and pd.api.types.is_numeric_dtype(df[col]) and df[col].sum() > 0]
+    if not fg_cols:
+        return px.scatter(title="No functional groups detected", template=PLOT_TEMPLATE)
+    top = df[fg_cols].sum().sort_values(ascending=False).head(30).index.tolist()
+    matrix = df[top].copy()
+    matrix.index = df.get("Name", pd.Series(range(len(df)))).astype(str)
+    return px.imshow(matrix, labels={"x": "Functional group", "y": "Compound", "color": "Count"}, template=PLOT_TEMPLATE, title="Functional Group Count Heatmap")
+
+
 def pca_plot(df: pd.DataFrame, features: list[str], color_col: str | None = None) -> tuple[go.Figure, pd.DataFrame]:
     if len(features) < 2 or len(df) < 2:
         fig = px.scatter(title="PCA needs at least two molecules and two features", template=PLOT_TEMPLATE)
@@ -604,6 +717,8 @@ def dataframe_download(df: pd.DataFrame, file_name: str, key_prefix: str = "main
 
 def pickle_model_bundle(bundle: dict[str, Any]) -> bytes:
     safe_bundle = {key: value for key, value in bundle.items() if key not in {"y_test", "y_pred"}}
+    if "descriptor_options" in safe_bundle:
+        safe_bundle["descriptor_options"] = descriptor_options_to_dict(safe_bundle["descriptor_options"])
     return pickle.dumps(safe_bundle)
 
 
@@ -658,6 +773,7 @@ def init_state() -> None:
         "invalid_df": None,
         "desc_df": None,
         "features": [],
+        "target_candidates": [],
         "descriptor_options": None,
         "training": None,
         "selected_bundle": None,
@@ -682,7 +798,7 @@ def render_home() -> None:
     c1.metric("Input", "SMILES / SDF / CSV")
     c2.metric("Descriptors", "RDKit + Fingerprints")
     c3.metric("Models", "Regression + Classification")
-    st.info("Start with the example dataset, or upload your own molecules with a target column such as IC50, pIC50, DockingScore, LogS, Toxicity, or ActivityClass.")
+    st.info("Start with the example dataset, or upload your own molecules with a target column such as IC50, pIC50, DockingScore, LogS, Toxicity, or ActivityClass. The built-in Demo_pIC50 endpoint is synthetic and is included only to test the QSAR workflow.")
 
 
 def render_input() -> None:
@@ -721,6 +837,7 @@ def render_input() -> None:
         valid, invalid = validate_molecules(raw, smiles_col)
         st.session_state.valid_df = valid
         st.session_state.invalid_df = invalid
+        st.session_state.target_candidates = guess_target_columns(valid, "SMILES")
         st.success(f"Valid molecules: {len(valid)}")
         if not invalid.empty:
             st.warning(f"Invalid molecules: {len(invalid)}")
@@ -737,12 +854,24 @@ def render_descriptors() -> None:
     include_morgan = c1.checkbox("Morgan fingerprints", value=True)
     include_maccs = c2.checkbox("MACCS keys", value=False)
     morgan_bits = c3.selectbox("Morgan bits", [256, 512, 1024, 2048], index=2)
+    with st.expander("Descriptor families", expanded=True):
+        d1, d2, d3 = st.columns(3)
+        include_full_rdkit = d1.checkbox("All RDKit descriptors", value=True, help="Adds the complete numeric RDKit descriptor list where available.")
+        include_functional_groups = d2.checkbox("Functional group counts", value=True, help="Adds RDKit fragment counters such as amide, ester, phenol, carboxylic acid, halogen, nitro, and more.")
+        include_element_counts = d3.checkbox("Element counts", value=True, help="Adds atom/heteroatom counts and element fractions.")
     if st.button("Calculate Descriptors", type="primary", use_container_width=True):
         with st.spinner("Calculating RDKit descriptors and fingerprints..."):
-            options = DescriptorOptions(include_morgan=include_morgan, include_maccs=include_maccs, morgan_bits=int(morgan_bits))
+            options = DescriptorOptions(
+                include_morgan=include_morgan,
+                include_maccs=include_maccs,
+                morgan_bits=int(morgan_bits),
+                include_full_rdkit=include_full_rdkit,
+                include_functional_groups=include_functional_groups,
+                include_element_counts=include_element_counts,
+            )
             st.session_state.desc_df = calculate_descriptors(valid, options)
             st.session_state.features = descriptor_columns(st.session_state.desc_df)
-            st.session_state.descriptor_options = options
+            st.session_state.descriptor_options = descriptor_options_to_dict(options)
         st.success(f"Calculated {len(st.session_state.features)} numeric features.")
 
     desc = st.session_state.desc_df
@@ -753,6 +882,11 @@ def render_descriptors() -> None:
         st.write("Drug-likeness criteria")
         st.dataframe(criteria, use_container_width=True)
         dataframe_download(criteria, "drug_likeness_criteria.csv", key_prefix="descriptors_tab")
+        fg_table = nonzero_functional_group_table(desc)
+        if not fg_table.empty:
+            st.write("Detected functional groups")
+            st.dataframe(fg_table, use_container_width=True)
+            dataframe_download(fg_table, "functional_group_counts.csv", key_prefix="descriptors_tab")
 
 
 def render_modeling() -> None:
@@ -762,7 +896,10 @@ def render_modeling() -> None:
         st.warning("Calculate descriptors first.")
         return
     smiles_col = "SMILES"
-    targets = guess_target_columns(desc, smiles_col)
+    stored_targets = st.session_state.get("target_candidates", [])
+    targets = [col for col in stored_targets if col in desc.columns and col != smiles_col]
+    if not targets:
+        targets = guess_target_columns(desc[[col for col in desc.columns if not col.startswith(("RDKit_", "FG_", "Elem_", "Morgan_", "MACCS_"))]], smiles_col)
     if not targets:
         st.info("No target column found. Add an activity/property column to train QSAR models.")
         return
@@ -770,9 +907,21 @@ def render_modeling() -> None:
     target = c1.selectbox("Target column", targets)
     task_type = c2.selectbox("Task type", ["Regression", "Classification"])
     test_size = c3.slider("Test split", 0.1, 0.4, 0.2, 0.05)
-    features = [f for f in st.session_state.features if f != target]
+    possible_target_columns = set(targets)
+    all_features = [f for f in st.session_state.features if f not in possible_target_columns]
+    feature_mode = st.selectbox(
+        "Feature set for modeling",
+        ["Core descriptors + functional groups", "All descriptors except fingerprints", "All descriptors + fingerprints"],
+        index=0,
+        help="The recommended setting avoids high-dimensional fingerprints for small datasets and usually gives more stable validation metrics.",
+    )
+    features = feature_subset(all_features, feature_mode)
+    st.caption(f"Using {len(features)} model features from {len(all_features)} calculated numeric columns.")
     models = model_catalog(task_type, n_classes=desc[target].nunique())
-    default = list(models.keys())[:6]
+    if task_type == "Regression":
+        default = [name for name in ["Ridge", "Random Forest", "Extra Trees", "Gradient Boosting", "SVR (RBF)", "kNN"] if name in models]
+    else:
+        default = [name for name in ["Logistic Regression", "Random Forest", "Extra Trees", "SVM (RBF)", "kNN", "Naive Bayes"] if name in models]
     selected = st.multiselect("Models to compare", list(models.keys()), default=default)
     cv_folds = st.slider("Cross-validation folds", 2, 10, 5)
     if st.button("Train and Compare Models", type="primary", use_container_width=True):
@@ -790,6 +939,8 @@ def render_modeling() -> None:
         st.dataframe(leaderboard, use_container_width=True)
         metric = "R2" if task_type == "Regression" else "F1"
         st.plotly_chart(px.bar(leaderboard, x="Model", y=metric, template=PLOT_TEMPLATE, title="Model Leaderboard"), use_container_width=True, key="leaderboard")
+        if task_type == "Regression" and "R2" in leaderboard.columns and leaderboard["R2"].max() < 0:
+            st.warning("All test-set R2 values are negative. This usually means the dataset is too small, noisy, or chemically inconsistent for the chosen split/features. Try the recommended feature set, add more compounds, or use cross-validation/external validation.")
 
 
 def render_evaluate() -> None:
@@ -853,7 +1004,7 @@ def render_predict() -> None:
         if valid.empty:
             st.error("No valid molecules were available for prediction.")
             return
-        options = bundle.get("descriptor_options") or infer_descriptor_options(bundle["features"])
+        options = normalize_descriptor_options(bundle.get("descriptor_options") or infer_descriptor_options(bundle["features"]))
         desc = calculate_descriptors(valid, options)
         missing = [f for f in bundle["features"] if f not in desc.columns]
         for col in missing:
@@ -896,6 +1047,7 @@ def render_visuals() -> None:
     color = st.selectbox("Color PCA by", ["None"] + targets)
     st.plotly_chart(plot_descriptor_hist(desc, [c for c in features if not c.startswith(("Morgan_", "MACCS_"))]), use_container_width=True, key="hist")
     st.plotly_chart(plot_corr(desc, [c for c in features if not c.startswith(("Morgan_", "MACCS_"))]), use_container_width=True, key="corr")
+    st.plotly_chart(plot_functional_group_heatmap(desc), use_container_width=True, key="fg_heatmap")
     fig, loadings = pca_plot(desc, features, None if color == "None" else color)
     st.plotly_chart(fig, use_container_width=True, key="pca")
     st.write("Top PCA loadings")

@@ -6,7 +6,7 @@ A web-only QSAR platform for chemical compounds and drug-like molecules. The app
 
 - Accepts molecule input from SMILES, CSV, Excel, TXT, and SDF files.
 - Validates and canonicalizes molecules with RDKit.
-- Calculates chemistry-aware molecular descriptors and fingerprints.
+- Calculates chemistry-aware molecular descriptors, the full available RDKit numeric descriptor list, functional-group counters, element counts, and fingerprints.
 - Supports experimental activities, physicochemical endpoints, toxicity labels, activity classes, and docking scores as target columns.
 - Trains regression and classification QSAR models.
 - Includes nonlinear models such as SVR/SVM, kNN, Random Forest, Extra Trees, Gradient Boosting, and MLP.
@@ -17,9 +17,11 @@ A web-only QSAR platform for chemical compounds and drug-like molecules. The app
 
 ## Scientific Basis
 
-The descriptor engine uses RDKit to calculate accepted cheminformatics descriptors, including molecular weight, exact molecular weight, LogP, molar refractivity, TPSA, hydrogen-bond donors and acceptors, rotatable bonds, ring counts, aromatic rings, fraction sp3, formal charge, QED, Bertz complexity, Balaban J, Labute ASA, chi/kappa indices, and partial-charge summaries.
+The descriptor engine uses RDKit to calculate accepted cheminformatics descriptors, including molecular weight, exact molecular weight, LogP, molar refractivity, TPSA, hydrogen-bond donors and acceptors, rotatable bonds, ring counts, aromatic rings, fraction sp3, formal charge, QED, Bertz complexity, Balaban J, Labute ASA, chi/kappa indices, partial-charge summaries, the full RDKit numeric descriptor list, element counts, and RDKit fragment-based functional-group counters.
 
 The fingerprint engine can calculate Morgan fingerprints and MACCS keys. Morgan fingerprints represent circular atom neighborhoods and are widely used for ligand similarity and QSAR modeling. MACCS keys represent predefined chemical substructure patterns.
+
+Functional-group counters are computed from RDKit `Fragments` patterns and summarize motifs such as amides, esters, phenols, carboxylic acids, halogens, nitro groups, amines, ethers, and related medicinal-chemistry fragments.
 
 The modeling workflow uses scikit-learn pipelines with imputation, variance filtering, scaling, model fitting, train/test split, and cross-validation. The tool can treat docking score columns as regression targets, but docking scores should be interpreted as computational proxies rather than experimental biological activity.
 
@@ -102,6 +104,8 @@ GitHub Pages can host the landing page in `docs/index.html`, but it cannot run t
 This repository includes `environment.yml` for Streamlit Cloud. It requests Python 3.11 and RDKit from conda-forge, which avoids newer default Python runtimes that may not yet support all RDKit drawing modules. The `requirements.txt` file is kept for local Windows installation.
 
 ## Input File Formats
+
+The built-in example dataset contains a synthetic column named `Demo_pIC50`. It is only for checking that the software workflow behaves correctly. Replace it with real experimental activity, physicochemical property, toxicity, docking score, or class labels for research use.
 
 ### CSV / Excel
 
