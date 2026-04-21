@@ -12,6 +12,8 @@ A web-only QSAR platform for chemical compounds and drug-like molecules. The app
 - Includes nonlinear models such as SVR/SVM, kNN, Random Forest, Extra Trees, Gradient Boosting, and MLP.
 - Evaluates models with appropriate metrics and plots.
 - Predicts new compounds and ranks them by predicted activity/property.
+- Aligns compounds against the best-activity reference using Morgan similarity, MCS overlap, and Murcko scaffold matching.
+- Suggests activity-guided property windows and functional groups enriched in better compounds.
 - Shows drug-likeness criteria and applicability-domain checks for new molecules.
 - Exports descriptor tables, prediction tables, model leaderboards, trained model bundles, and an HTML report.
 
@@ -22,6 +24,8 @@ The descriptor engine uses RDKit to calculate accepted cheminformatics descripto
 The fingerprint engine can calculate Morgan fingerprints and MACCS keys. Morgan fingerprints represent circular atom neighborhoods and are widely used for ligand similarity and QSAR modeling. MACCS keys represent predefined chemical substructure patterns.
 
 Functional-group counters are computed from RDKit `Fragments` patterns and summarize motifs such as amides, esters, phenols, carboxylic acids, halogens, nitro groups, amines, ethers, and related medicinal-chemistry fragments.
+
+The alignment/design module chooses a best-activity reference molecule, then compares other compounds by Morgan Tanimoto similarity, maximum common substructure overlap, and Murcko scaffold matching. It also compares high-activity compounds against the rest of the dataset to propose property ranges and functional-group motifs associated with better activity.
 
 The modeling workflow uses scikit-learn pipelines with imputation, variance filtering, scaling, model fitting, train/test split, and cross-validation. The tool can treat docking score columns as regression targets, but docking scores should be interpreted as computational proxies rather than experimental biological activity.
 

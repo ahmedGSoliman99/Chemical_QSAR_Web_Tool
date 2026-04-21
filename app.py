@@ -18,7 +18,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 from rdkit import Chem, DataStructs
-from rdkit.Chem import Crippen, Descriptors, Fragments, Lipinski, MACCSkeys, QED, rdFingerprintGenerator, rdMolDescriptors
+from rdkit.Chem import Crippen, Descriptors, Fragments, Lipinski, MACCSkeys, QED, rdFMCS, rdFingerprintGenerator, rdMolDescriptors
+from rdkit.Chem.Scaffolds import MurckoScaffold
 from sklearn.base import clone
 from sklearn.decomposition import PCA
 from sklearn.ensemble import (
@@ -649,6 +650,180 @@ def mol_png_data_uri(smiles: str, size: tuple[int, int] = (220, 170)) -> str:
         return ""
 
 
+def morgan_fingerprint(mol: Chem.Mol, radius: int = 2, n_bits: int = 2048) -> Any:
+    generator = rdFingerprintGenerator.GetMorganGenerator(radius=radius, fpSize=n_bits)
+    return generator.GetFingerprint(mol)
+
+
+def scaffold_smiles(smiles: str) -> str:
+    mol = mol_from_smiles(smiles)
+    if mol is None:
+        return ""
+    try:
+        return MurckoScaffold.MurckoScaffoldSmiles(mol=mol)
+    except Exception:
+        return ""
+
+
+def mcs_alignment_summary(reference_smiles: str, candidate_smiles: str) -> dict[str, Any]:
+    ref = mol_from_smiles(reference_smiles)
+    cand = mol_from_smiles(candidate_smiles)
+    if ref is None or cand is None:
+        return {"MCSAtoms": 0, "MCSAtomFraction": 0.0, "MCSSmarts": ""}
+    try:
+        result = rdFMCS.FindMCS([ref, cand], timeout=3, ringMatchesRingOnly=True, completeRingsOnly=True)
+        if result.canceled or not result.smartsString:
+            return {"MCSAtoms": 0, "MCSAtomFraction": 0.0, "MCSSmarts": ""}
+        mcs_mol = Chem.MolFromSmarts(result.smartsString)
+        atom_count = int(mcs_mol.GetNumAtoms()) if mcs_mol is not None else int(result.numAtoms)
+        denominator = max(1, min(ref.GetNumHeavyAtoms(), cand.GetNumHeavyAtoms()))
+        return {
+            "MCSAtoms": atom_count,
+            "MCSAtomFraction": round(atom_count / denominator, 3),
+            "MCSSmarts": result.smartsString,
+        }
+    except Exception:
+        return {"MCSAtoms": 0, "MCSAtomFraction": 0.0, "MCSSmarts": ""}
+
+
+def similarity_to_reference(df: pd.DataFrame, reference_row: pd.Series) -> pd.DataFrame:
+    ref_mol = mol_from_smiles(str(reference_row["SMILES"]))
+    if ref_mol is None:
+        return pd.DataFrame()
+    ref_fp = morgan_fingerprint(ref_mol)
+    ref_scaffold = scaffold_smiles(str(reference_row["SMILES"]))
+    rows = []
+    for _, row in df.iterrows():
+        mol = mol_from_smiles(str(row["SMILES"]))
+        if mol is None:
+            continue
+        fp = morgan_fingerprint(mol)
+        tanimoto = float(DataStructs.TanimotoSimilarity(ref_fp, fp))
+        candidate_scaffold = scaffold_smiles(str(row["SMILES"]))
+        mcs = mcs_alignment_summary(str(reference_row["SMILES"]), str(row["SMILES"]))
+        rows.append({
+            "Name": row.get("Name", ""),
+            "SMILES": row.get("SMILES", ""),
+            "MorganTanimotoToReference": round(tanimoto, 3),
+            "MCSAtomFraction": mcs["MCSAtomFraction"],
+            "MCSAtoms": mcs["MCSAtoms"],
+            "SameMurckoScaffold": bool(ref_scaffold and candidate_scaffold and ref_scaffold == candidate_scaffold),
+            "CandidateScaffold": candidate_scaffold,
+            "MCSSmarts": mcs["MCSSmarts"],
+        })
+    return pd.DataFrame(rows).sort_values(["MorganTanimotoToReference", "MCSAtomFraction"], ascending=False).reset_index(drop=True)
+
+
+def pairwise_similarity_matrix(df: pd.DataFrame) -> tuple[pd.DataFrame, go.Figure]:
+    names = df.get("Name", pd.Series(range(len(df)))).astype(str).tolist()
+    fps = []
+    valid_names = []
+    for name, smiles in zip(names, df["SMILES"].astype(str)):
+        mol = mol_from_smiles(smiles)
+        if mol is None:
+            continue
+        fps.append(morgan_fingerprint(mol))
+        valid_names.append(name)
+    if not fps:
+        return pd.DataFrame(), px.scatter(title="No valid molecules for similarity", template=PLOT_TEMPLATE)
+    matrix = np.zeros((len(fps), len(fps)))
+    for i, fp_i in enumerate(fps):
+        for j, fp_j in enumerate(fps):
+            matrix[i, j] = DataStructs.TanimotoSimilarity(fp_i, fp_j)
+    sim_df = pd.DataFrame(matrix, index=valid_names, columns=valid_names)
+    fig = px.imshow(sim_df, zmin=0, zmax=1, color_continuous_scale="Viridis", template=PLOT_TEMPLATE, title="Pairwise Morgan Similarity Matrix")
+    return sim_df, fig
+
+
+def best_reference_row(df: pd.DataFrame, target: str, direction: str, active_class: str | None = None) -> pd.Series:
+    if pd.api.types.is_numeric_dtype(df[target]):
+        numeric = pd.to_numeric(df[target], errors="coerce")
+        idx = numeric.idxmin() if direction == "lower" else numeric.idxmax()
+        return df.loc[idx]
+    subset = df[df[target].astype(str) == str(active_class)] if active_class else df
+    if subset.empty:
+        subset = df
+    if "DrugLikeScore" in subset.columns:
+        return subset.sort_values("DrugLikeScore", ascending=False).iloc[0]
+    return subset.iloc[0]
+
+
+def high_activity_mask(df: pd.DataFrame, target: str, direction: str, active_class: str | None = None) -> pd.Series:
+    if pd.api.types.is_numeric_dtype(df[target]):
+        values = pd.to_numeric(df[target], errors="coerce")
+        threshold = values.quantile(0.75 if direction == "higher" else 0.25)
+        return values >= threshold if direction == "higher" else values <= threshold
+    return df[target].astype(str) == str(active_class)
+
+
+def activity_design_profile(df: pd.DataFrame, target: str, direction: str, active_class: str | None = None) -> pd.DataFrame:
+    mask = high_activity_mask(df, target, direction, active_class)
+    top_df = df[mask].copy()
+    if top_df.empty:
+        return pd.DataFrame()
+    key_descriptors = [
+        "MolWt", "MolLogP", "TPSA", "HBD", "HBA", "RotatableBonds", "AromaticRings",
+        "FractionCSP3", "QED", "BertzCT", "HeteroAtomCount", "FormalCharge",
+    ]
+    rows = []
+    for descriptor in key_descriptors:
+        if descriptor not in top_df.columns:
+            continue
+        values = pd.to_numeric(top_df[descriptor], errors="coerce").dropna()
+        if values.empty:
+            continue
+        rows.append({
+            "Criterion": descriptor,
+            "RecommendedRange": f"{values.quantile(0.10):.2f} to {values.quantile(0.90):.2f}",
+            "MedianInBestCompounds": round(float(values.median()), 3),
+            "Reason": "Observed range among the best-activity compounds in this dataset.",
+        })
+    return pd.DataFrame(rows)
+
+
+def functional_group_activity_suggestions(df: pd.DataFrame, target: str, direction: str, active_class: str | None = None) -> pd.DataFrame:
+    fg_cols = [col for col in df.columns if col.startswith("FG_") and pd.api.types.is_numeric_dtype(df[col]) and df[col].sum() > 0]
+    if not fg_cols:
+        return pd.DataFrame()
+    mask = high_activity_mask(df, target, direction, active_class)
+    high = df[mask]
+    low = df[~mask]
+    if high.empty or low.empty:
+        return pd.DataFrame()
+    rows = []
+    for col in fg_cols:
+        high_mean = float(pd.to_numeric(high[col], errors="coerce").fillna(0).mean())
+        low_mean = float(pd.to_numeric(low[col], errors="coerce").fillna(0).mean())
+        delta = high_mean - low_mean
+        if abs(delta) < 0.05:
+            continue
+        rows.append({
+            "FunctionalGroup": col.replace("FG_", ""),
+            "MeanInBestCompounds": round(high_mean, 3),
+            "MeanInOtherCompounds": round(low_mean, 3),
+            "EnrichmentDelta": round(delta, 3),
+            "DesignSuggestion": "Consider retaining/adding this motif" if delta > 0 else "Consider reducing/avoiding this motif",
+        })
+    return pd.DataFrame(rows).sort_values("EnrichmentDelta", key=np.abs, ascending=False).reset_index(drop=True)
+
+
+def descriptor_activity_correlations(df: pd.DataFrame, target: str) -> pd.DataFrame:
+    if not pd.api.types.is_numeric_dtype(df[target]):
+        return pd.DataFrame()
+    numeric_target = pd.to_numeric(df[target], errors="coerce")
+    rows = []
+    for col in descriptor_columns(df):
+        if col == target or col.startswith(("Morgan_", "MACCS_")):
+            continue
+        values = pd.to_numeric(df[col], errors="coerce")
+        if values.nunique(dropna=True) < 3:
+            continue
+        corr = values.corr(numeric_target, method="spearman")
+        if pd.notna(corr):
+            rows.append({"Descriptor": col, "SpearmanCorrelation": round(float(corr), 3)})
+    return pd.DataFrame(rows).sort_values("SpearmanCorrelation", key=np.abs, ascending=False).reset_index(drop=True)
+
+
 def plot_descriptor_hist(df: pd.DataFrame, cols: list[str]) -> go.Figure:
     if not cols:
         return px.scatter(title="No numeric descriptor columns available", template=PLOT_TEMPLATE)
@@ -1036,6 +1211,116 @@ def render_predict() -> None:
         dataframe_download(pred, "compound_predictions.csv", key_prefix="predict_tab")
 
 
+def render_alignment_design() -> None:
+    st.subheader("Alignment & Activity-Guided Design")
+    desc = st.session_state.desc_df
+    if not isinstance(desc, pd.DataFrame) or desc.empty:
+        st.warning("Calculate descriptors first.")
+        return
+
+    targets = [col for col in st.session_state.get("target_candidates", []) if col in desc.columns]
+    if not targets:
+        targets = guess_target_columns(desc, "SMILES")
+    if not targets:
+        st.warning("No activity/property target column is available for design guidance.")
+        return
+
+    c1, c2, c3 = st.columns(3)
+    target = c1.selectbox("Activity/property column", targets, key="align_target")
+    is_numeric = pd.api.types.is_numeric_dtype(desc[target])
+    if is_numeric:
+        direction = infer_direction(target)
+        direction = c2.selectbox("Best activity means", ["higher", "lower"], index=0 if direction == "higher" else 1, key="align_direction")
+        active_class = None
+    else:
+        classes = sorted(desc[target].dropna().astype(str).unique().tolist())
+        default_idx = classes.index("Active") if "Active" in classes else 0
+        active_class = c2.selectbox("Desired class", classes, index=default_idx, key="align_class")
+        direction = "higher"
+
+    reference = best_reference_row(desc, target, direction, active_class)
+    c3.metric("Reference compound", str(reference.get("Name", "Reference")))
+
+    st.info(
+        "This tab uses RDKit Morgan similarity, maximum common substructure (MCS), Murcko scaffold matching, "
+        "and functional-group enrichment. It suggests dataset-driven design criteria; it is not a docking or experimental guarantee."
+    )
+
+    ref_cols = st.columns([1, 2])
+    with ref_cols[0]:
+        image_uri = mol_png_data_uri(str(reference["SMILES"]), size=(300, 220))
+        if image_uri:
+            st.image(image_uri, caption=f"Reference: {reference.get('Name', '')}")
+        else:
+            st.code(str(reference["SMILES"]), language="text")
+    with ref_cols[1]:
+        st.write("Best-activity reference details")
+        details = pd.DataFrame({
+            "Item": ["Name", "SMILES", target, "Murcko scaffold"],
+            "Value": [
+                reference.get("Name", ""),
+                reference.get("SMILES", ""),
+                reference.get(target, ""),
+                scaffold_smiles(str(reference["SMILES"])),
+            ],
+        })
+        st.dataframe(details, use_container_width=True, hide_index=True)
+
+    align_df = similarity_to_reference(desc, reference)
+    if not align_df.empty:
+        st.write("Compound alignment/similarity to the best reference")
+        if target in desc.columns:
+            align_df = align_df.merge(desc[["Name", target]], on="Name", how="left")
+        st.dataframe(align_df.head(50), use_container_width=True)
+        st.plotly_chart(
+            px.scatter(
+                align_df,
+                x="MorganTanimotoToReference",
+                y="MCSAtomFraction",
+                color=target if target in align_df.columns else None,
+                hover_name="Name",
+                template=PLOT_TEMPLATE,
+                title="Similarity and MCS Alignment to Best Reference",
+            ),
+            use_container_width=True,
+            key="alignment_similarity_scatter",
+        )
+        dataframe_download(align_df, "compound_alignment_to_reference.csv", key_prefix="alignment_tab")
+
+    sim_df, sim_fig = pairwise_similarity_matrix(desc)
+    st.plotly_chart(sim_fig, use_container_width=True, key="pairwise_similarity_matrix")
+    if not sim_df.empty:
+        dataframe_download(sim_df.reset_index(names="Compound"), "pairwise_similarity_matrix.csv", key_prefix="alignment_tab")
+
+    profile = activity_design_profile(desc, target, direction, active_class)
+    if not profile.empty:
+        st.write("Suggested property window from best-activity compounds")
+        st.dataframe(profile, use_container_width=True, hide_index=True)
+
+    fg_suggestions = functional_group_activity_suggestions(desc, target, direction, active_class)
+    if not fg_suggestions.empty:
+        st.write("Functional groups enriched or depleted in better compounds")
+        st.dataframe(fg_suggestions.head(40), use_container_width=True, hide_index=True)
+        st.plotly_chart(
+            px.bar(
+                fg_suggestions.head(20),
+                x="EnrichmentDelta",
+                y="FunctionalGroup",
+                color="DesignSuggestion",
+                orientation="h",
+                template=PLOT_TEMPLATE,
+                title="Functional Group Design Suggestions",
+            ),
+            use_container_width=True,
+            key="fg_design_suggestions",
+        )
+
+    correlations = descriptor_activity_correlations(desc, target)
+    if not correlations.empty:
+        st.write("Descriptor correlations with activity/property")
+        st.dataframe(correlations.head(40), use_container_width=True, hide_index=True)
+
+
 def render_visuals() -> None:
     st.subheader("Visualizations")
     desc = st.session_state.desc_df
@@ -1116,7 +1401,7 @@ def main() -> None:
     init_state()
     st.sidebar.title("Chemical QSAR")
     st.sidebar.caption("Web-only molecular QSAR workflow")
-    tabs = st.tabs(["Home", "Input", "Descriptors", "Train Model", "Evaluate", "Predict", "Visualizations", "Export", "About"])
+    tabs = st.tabs(["Home", "Input", "Descriptors", "Train Model", "Evaluate", "Predict", "Alignment & Design", "Visualizations", "Export", "About"])
     with tabs[0]:
         render_home()
     with tabs[1]:
@@ -1130,10 +1415,12 @@ def main() -> None:
     with tabs[5]:
         render_predict()
     with tabs[6]:
-        render_visuals()
+        render_alignment_design()
     with tabs[7]:
-        render_export()
+        render_visuals()
     with tabs[8]:
+        render_export()
+    with tabs[9]:
         render_about()
 
 
