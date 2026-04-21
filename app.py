@@ -18,7 +18,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 from rdkit import Chem, DataStructs
-from rdkit.Chem import Crippen, Descriptors, Draw, Lipinski, MACCSkeys, QED, rdFingerprintGenerator, rdMolDescriptors
+from rdkit.Chem import Crippen, Descriptors, Lipinski, MACCSkeys, QED, rdFingerprintGenerator, rdMolDescriptors
 from sklearn.base import clone
 from sklearn.decomposition import PCA
 from sklearn.ensemble import (
@@ -533,11 +533,17 @@ def mol_png_data_uri(smiles: str, size: tuple[int, int] = (220, 170)) -> str:
     mol = mol_from_smiles(smiles)
     if mol is None:
         return ""
-    img = Draw.MolToImage(mol, size=size)
-    buffer = io.BytesIO()
-    img.save(buffer, format="PNG")
-    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-    return f"data:image/png;base64,{encoded}"
+    try:
+        from rdkit.Chem import Draw
+
+        img = Draw.MolToImage(mol, size=size)
+        buffer = io.BytesIO()
+        img.save(buffer, format="PNG")
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+        return f"data:image/png;base64,{encoded}"
+    except Exception:
+        # Some cloud builds can run RDKit descriptors but fail on optional drawing backends.
+        return ""
 
 
 def plot_descriptor_hist(df: pd.DataFrame, cols: list[str]) -> go.Figure:
@@ -870,7 +876,12 @@ def render_predict() -> None:
         cols = st.columns(min(4, len(pred)))
         for idx, (_, row) in enumerate(pred.head(4).iterrows()):
             with cols[idx % len(cols)]:
-                st.image(mol_png_data_uri(row["SMILES"]), caption=row["Name"])
+                image_uri = mol_png_data_uri(row["SMILES"])
+                if image_uri:
+                    st.image(image_uri, caption=row["Name"])
+                else:
+                    st.caption(row["Name"])
+                    st.code(row["SMILES"], language="text")
         dataframe_download(pred, "compound_predictions.csv", key_prefix="predict_tab")
 
 

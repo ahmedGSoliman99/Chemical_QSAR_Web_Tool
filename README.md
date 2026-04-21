@@ -1,4 +1,4 @@
-﻿# Chemical QSAR Web Tool
+# Chemical QSAR Web Tool
 
 A web-only QSAR platform for chemical compounds and drug-like molecules. The app is built with Streamlit, RDKit, scikit-learn, and Plotly so non-programmers can upload molecules, calculate descriptors, train machine-learning models, visualize chemical space, and predict new compounds from a browser.
 
@@ -28,8 +28,9 @@ The modeling workflow uses scikit-learn pipelines with imputation, variance filt
 ```text
 Chemical_QSAR_Web_Tool/
   app.py
+  environment.yml
   requirements.txt
-  runtime.txt
+  packages.txt
   README.md
   DEPLOY_STREAMLIT.md
   data/
@@ -75,9 +76,12 @@ The easiest hosting option is Streamlit Community Cloud:
 3. Choose `New app`.
 4. Select this GitHub repository.
 5. Set the main file path to `app.py`.
-6. Deploy.
+6. Open `Advanced settings` and choose Python `3.11` if the selector appears.
+7. Deploy.
 
 GitHub Pages can host the landing page in `docs/index.html`, but it cannot run the Python/RDKit Streamlit app. The actual interactive QSAR app needs Streamlit Cloud or another Python-capable host.
+
+This repository includes `environment.yml` for Streamlit Cloud. It requests Python 3.11 and RDKit from conda-forge, which avoids newer default Python runtimes that may not yet support all RDKit drawing modules. The `requirements.txt` file is kept for local Windows installation.
 
 ## Input File Formats
 

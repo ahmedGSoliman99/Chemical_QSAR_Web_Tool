@@ -1,4 +1,4 @@
-﻿Name,SMILES,pIC50,ActivityClass
+Name,SMILES,pIC50,ActivityClass
 Aspirin,CC(=O)OC1=CC=CC=C1C(=O)O,5.10,Moderate
 Caffeine,CN1C=NC2=C1C(=O)N(C(=O)N2C)C,4.20,Weak
 Ibuprofen,CC(C)CC1=CC=C(C=C1)C(C)C(=O)O,5.80,Active
