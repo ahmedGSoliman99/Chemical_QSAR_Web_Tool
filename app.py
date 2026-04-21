@@ -855,12 +855,23 @@ def plot_functional_group_heatmap(df: pd.DataFrame) -> go.Figure:
 
 
 def pca_plot(df: pd.DataFrame, features: list[str], color_col: str | None = None) -> tuple[go.Figure, pd.DataFrame]:
-    if len(features) < 2 or len(df) < 2:
+    valid_features = [feature for feature in features if feature in df.columns]
+    if len(valid_features) < 2 or len(df) < 2:
         fig = px.scatter(title="PCA needs at least two molecules and two features", template=PLOT_TEMPLATE)
         return fig, pd.DataFrame()
-    X = df[features].replace([np.inf, -np.inf], np.nan)
-    X = SimpleImputer(strategy="median").fit_transform(X)
+    X_df = df[valid_features].apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan)
+    X_df = X_df.dropna(axis=1, how="all")
+    X_df = X_df.loc[:, X_df.nunique(dropna=True) > 1]
+    valid_features = X_df.columns.tolist()
+    if len(valid_features) < 2:
+        fig = px.scatter(title="PCA needs at least two non-constant descriptor columns", template=PLOT_TEMPLATE)
+        return fig, pd.DataFrame()
+    X = SimpleImputer(strategy="median").fit_transform(X_df)
     X = RobustScaler().fit_transform(X)
+    n_components = min(2, X.shape[0], X.shape[1])
+    if n_components < 2:
+        fig = px.scatter(title="PCA needs at least two samples and two usable features", template=PLOT_TEMPLATE)
+        return fig, pd.DataFrame()
     pca = PCA(n_components=2, random_state=42)
     scores = pca.fit_transform(X)
     pca_df = pd.DataFrame({"PC1": scores[:, 0], "PC2": scores[:, 1], "Name": df.get("Name", pd.Series(range(len(df)))).astype(str)})
@@ -875,7 +886,7 @@ def pca_plot(df: pd.DataFrame, features: list[str], color_col: str | None = None
         template=PLOT_TEMPLATE,
         title=f"Chemical Space PCA (PC1 {pca.explained_variance_ratio_[0]*100:.1f}%, PC2 {pca.explained_variance_ratio_[1]*100:.1f}%)",
     )
-    loadings = pd.DataFrame({"Feature": features, "PC1_Loading": pca.components_[0], "PC2_Loading": pca.components_[1]})
+    loadings = pd.DataFrame({"Feature": valid_features, "PC1_Loading": pca.components_[0], "PC2_Loading": pca.components_[1]})
     return fig, loadings.sort_values("PC1_Loading", key=np.abs, ascending=False)
 
 
@@ -1327,8 +1338,10 @@ def render_visuals() -> None:
     if not isinstance(desc, pd.DataFrame) or desc.empty:
         st.warning("Calculate descriptors first.")
         return
-    features = st.session_state.features
-    targets = guess_target_columns(desc, "SMILES")
+    targets = [col for col in st.session_state.get("target_candidates", []) if col in desc.columns]
+    if not targets:
+        targets = guess_target_columns(desc, "SMILES")
+    features = [feature for feature in st.session_state.features if feature not in set(targets)]
     color = st.selectbox("Color PCA by", ["None"] + targets)
     st.plotly_chart(plot_descriptor_hist(desc, [c for c in features if not c.startswith(("Morgan_", "MACCS_"))]), use_container_width=True, key="hist")
     st.plotly_chart(plot_corr(desc, [c for c in features if not c.startswith(("Morgan_", "MACCS_"))]), use_container_width=True, key="corr")
