@@ -1,0 +1,218 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Chemical QSAR Web Tool</title>
+  <meta name="description" content="A web-only chemical QSAR platform with RDKit descriptors, fingerprints, machine learning, visualization, and prediction." />
+  <style>
+    :root {
+      --ink: #082f32;
+      --muted: #547179;
+      --line: rgba(11, 77, 82, .18);
+      --accent: #00897b;
+      --accent-2: #2f6fed;
+      --paper: #f6fcfa;
+      --white: #ffffff;
+      --shadow: 0 30px 90px rgba(3, 45, 51, .14);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 82% 14%, rgba(47, 111, 237, .18), transparent 26rem),
+        radial-gradient(circle at 12% 18%, rgba(0, 137, 123, .20), transparent 30rem),
+        linear-gradient(160deg, #fafffd 0%, #edf8f6 52%, #eef5ff 100%);
+      min-height: 100vh;
+    }
+    .grid-bg {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: .34;
+      background-image:
+        linear-gradient(rgba(8, 47, 50, .08) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(8, 47, 50, .08) 1px, transparent 1px);
+      background-size: 46px 46px;
+      mask-image: linear-gradient(to bottom, black, transparent 76%);
+    }
+    header {
+      width: min(1160px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 28px 0 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 20px;
+      position: relative;
+      z-index: 2;
+    }
+    .brand { font-weight: 800; letter-spacing: -.04em; font-size: 1.05rem; }
+    .nav a { color: var(--ink); text-decoration: none; margin-left: 18px; font-weight: 700; font-size: .92rem; }
+    main { position: relative; z-index: 1; }
+    .hero {
+      width: min(1160px, calc(100% - 40px));
+      min-height: calc(100svh - 92px);
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 1.05fr .95fr;
+      gap: 54px;
+      align-items: center;
+      padding: 60px 0 70px;
+    }
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.62);
+      border-radius: 999px;
+      padding: 8px 12px;
+      color: #0a6461;
+      font-weight: 800;
+      font-size: .82rem;
+      box-shadow: 0 12px 40px rgba(3, 45, 51, .07);
+    }
+    h1 {
+      margin: 20px 0 18px;
+      font-size: clamp(3rem, 7vw, 6.8rem);
+      line-height: .88;
+      letter-spacing: -.075em;
+      max-width: 780px;
+    }
+    .lead { color: var(--muted); font-size: clamp(1.05rem, 1.8vw, 1.28rem); max-width: 640px; line-height: 1.65; }
+    .actions { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 30px; }
+    .btn {
+      appearance: none;
+      border: 0;
+      border-radius: 999px;
+      padding: 14px 20px;
+      font-weight: 850;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 50px;
+    }
+    .btn.primary { background: var(--ink); color: white; box-shadow: var(--shadow); }
+    .btn.secondary { background: rgba(255,255,255,.74); color: var(--ink); border: 1px solid var(--line); }
+    .molecule-panel {
+      min-height: 520px;
+      border: 1px solid var(--line);
+      border-radius: 34px;
+      background:
+        linear-gradient(145deg, rgba(255,255,255,.80), rgba(255,255,255,.42)),
+        radial-gradient(circle at 25% 20%, rgba(0,137,123,.16), transparent 14rem),
+        radial-gradient(circle at 75% 80%, rgba(47,111,237,.14), transparent 16rem);
+      box-shadow: var(--shadow);
+      position: relative;
+      overflow: hidden;
+      padding: 30px;
+    }
+    .mol-svg { width: 100%; height: 100%; min-height: 430px; }
+    .node { fill: #ffffff; stroke: #0b6967; stroke-width: 3; filter: drop-shadow(0 10px 18px rgba(8,47,50,.15)); }
+    .bond { stroke: #0b6967; stroke-width: 5; stroke-linecap: round; opacity: .74; }
+    .atom { font: 800 18px "Segoe UI", sans-serif; fill: #08383b; text-anchor: middle; dominant-baseline: middle; }
+    section { width: min(1160px, calc(100% - 40px)); margin: 0 auto; padding: 74px 0; }
+    .section-title { font-size: clamp(2rem, 4vw, 4.2rem); line-height: 1; letter-spacing: -.06em; margin: 0 0 18px; max-width: 780px; }
+    .section-copy { color: var(--muted); font-size: 1.08rem; max-width: 720px; line-height: 1.7; }
+    .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; margin-top: 34px; }
+    .feature {
+      border-top: 1px solid var(--line);
+      padding-top: 22px;
+      min-height: 170px;
+    }
+    .feature h3 { margin: 0 0 10px; font-size: 1.2rem; }
+    .feature p { margin: 0; color: var(--muted); line-height: 1.6; }
+    .workflow {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 28px;
+      align-items: start;
+    }
+    .steps { counter-reset: step; border-left: 1px solid var(--line); padding-left: 24px; }
+    .step { counter-increment: step; margin: 0 0 24px; }
+    .step:before { content: counter(step, decimal-leading-zero); display: block; color: var(--accent); font-weight: 900; margin-bottom: 6px; }
+    .step strong { display: block; font-size: 1.1rem; margin-bottom: 4px; }
+    .step span { color: var(--muted); line-height: 1.55; }
+    footer { width: min(1160px, calc(100% - 40px)); margin: 0 auto; padding: 48px 0 70px; color: var(--muted); border-top: 1px solid var(--line); }
+    @media (max-width: 900px) {
+      header { align-items: flex-start; }
+      .hero, .workflow { grid-template-columns: 1fr; }
+      .hero { padding-top: 44px; }
+      .features { grid-template-columns: 1fr; }
+      .molecule-panel { min-height: 360px; }
+      .mol-svg { min-height: 300px; }
+      .nav a { margin-left: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="grid-bg"></div>
+  <header>
+    <div class="brand">Chemical QSAR Web Tool</div>
+    <nav class="nav" aria-label="Main navigation">
+      <a href="https://github.com/ahmedGSoliman99/Chemical_QSAR_Web_Tool">GitHub</a>
+      <a href="https://share.streamlit.io/deploy?repository=https://github.com/ahmedGSoliman99/Chemical_QSAR_Web_Tool">Deploy App</a>
+    </nav>
+  </header>
+  <main>
+    <section class="hero">
+      <div>
+        <span class="eyebrow">RDKit descriptors + ML QSAR</span>
+        <h1>Chemical QSAR in the browser.</h1>
+        <p class="lead">A focused web tool for compound datasets: upload SMILES or SDF, calculate molecular descriptors and fingerprints, train interpretable or nonlinear models, visualize chemical space, and predict new compounds.</p>
+        <div class="actions">
+          <a class="btn primary" href="https://github.com/ahmedGSoliman99/Chemical_QSAR_Web_Tool">Open Source Code</a>
+          <a class="btn secondary" href="https://share.streamlit.io/deploy?repository=https://github.com/ahmedGSoliman99/Chemical_QSAR_Web_Tool">Deploy On Streamlit</a>
+        </div>
+      </div>
+      <div class="molecule-panel" aria-label="Stylized molecule diagram">
+        <svg class="mol-svg" viewBox="0 0 520 520" role="img">
+          <line class="bond" x1="130" y1="160" x2="250" y2="100" />
+          <line class="bond" x1="250" y1="100" x2="380" y2="170" />
+          <line class="bond" x1="380" y1="170" x2="365" y2="315" />
+          <line class="bond" x1="365" y1="315" x2="232" y2="390" />
+          <line class="bond" x1="232" y1="390" x2="108" y2="305" />
+          <line class="bond" x1="108" y1="305" x2="130" y2="160" />
+          <line class="bond" x1="250" y1="100" x2="255" y2="230" />
+          <line class="bond" x1="255" y1="230" x2="365" y2="315" />
+          <circle class="node" cx="130" cy="160" r="34" /><text class="atom" x="130" y="160">C</text>
+          <circle class="node" cx="250" cy="100" r="34" /><text class="atom" x="250" y="100">N</text>
+          <circle class="node" cx="380" cy="170" r="34" /><text class="atom" x="380" y="170">O</text>
+          <circle class="node" cx="365" cy="315" r="34" /><text class="atom" x="365" y="315">C</text>
+          <circle class="node" cx="232" cy="390" r="34" /><text class="atom" x="232" y="390">S</text>
+          <circle class="node" cx="108" cy="305" r="34" /><text class="atom" x="108" y="305">C</text>
+          <circle class="node" cx="255" cy="230" r="42" /><text class="atom" x="255" y="230">QSAR</text>
+        </svg>
+      </div>
+    </section>
+    <section>
+      <h2 class="section-title">Built for practical compound screening.</h2>
+      <p class="section-copy">The tool keeps the workflow clean for non-programmers while still using real cheminformatics methods under the hood.</p>
+      <div class="features">
+        <div class="feature"><h3>Input chemistry files</h3><p>Use SMILES, CSV, Excel, TXT, or SDF with activity, docking score, toxicity, solubility, or class labels.</p></div>
+        <div class="feature"><h3>Calculate descriptors</h3><p>RDKit physicochemical descriptors, drug-likeness criteria, Morgan fingerprints, and MACCS keys.</p></div>
+        <div class="feature"><h3>Model and explain</h3><p>Compare linear and nonlinear QSAR models, inspect feature importance, PCA space, residuals, and prediction ranking.</p></div>
+      </div>
+    </section>
+    <section class="workflow">
+      <div>
+        <h2 class="section-title">From molecules to ranked candidates.</h2>
+        <p class="section-copy">A browser-first workflow for quick screening experiments and research documentation.</p>
+      </div>
+      <div class="steps">
+        <p class="step"><strong>Upload molecules</strong><span>Load SMILES or SDF files and select the activity/property column.</span></p>
+        <p class="step"><strong>Train models</strong><span>Compare regression or classification models with cross-validation and test-set metrics.</span></p>
+        <p class="step"><strong>Predict new compounds</strong><span>Generate descriptors automatically, rank candidates, and check drug-like criteria.</span></p>
+        <p class="step"><strong>Export evidence</strong><span>Download CSV tables, trained model bundle, and an HTML summary report.</span></p>
+      </div>
+    </section>
+  </main>
+  <footer>
+    Prepared for Ahmed G. Soliman. Developer profile: <a href="https://sites.google.com/view/ahmed-g-soliman/home">Ahmed G. Soliman</a>.
+  </footer>
+</body>
+</html>

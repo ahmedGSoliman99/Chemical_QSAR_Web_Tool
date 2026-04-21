@@ -1,0 +1,11 @@
+﻿Name,SMILES,pIC50,ActivityClass
+Aspirin,CC(=O)OC1=CC=CC=C1C(=O)O,5.10,Moderate
+Caffeine,CN1C=NC2=C1C(=O)N(C(=O)N2C)C,4.20,Weak
+Ibuprofen,CC(C)CC1=CC=C(C=C1)C(C)C(=O)O,5.80,Active
+Paracetamol,CC(=O)NC1=CC=C(C=C1)O,4.90,Moderate
+Diclofenac,OC(=O)CC1=CC=CC=C1NC2=C(Cl)C=CC=C2Cl,6.20,Active
+Naproxen,COC1=CC2=C(C=C1)C=C(C=C2)C(C)C(=O)O,5.70,Active
+Warfarin,CC(=O)CC(C1=CC=CC=C1)C2=C(O)OC3=CC=CC=C3C2=O,6.00,Active
+Lidocaine,CCN(CC)CC(=O)NC1=C(C)C=CC=C1C,5.30,Moderate
+Metformin,CNC(=N)NC(=N)N,3.70,Weak
+Atorvastatin,CC(C)C1=C(C(=C(N1CC(CC(O)CC(O)CC(=O)O)O)C2=CC=C(F)C=C2)C3=CC=CC=C3)C(=O)NC4=CC=CC=C4,7.10,Active
