@@ -63,6 +63,49 @@ function Run-ProcessChecked($FilePath, $Arguments) {
     }
 }
 
+function Test-AppHealth($PortToCheck) {
+    try {
+        $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$PortToCheck/_stcore/health" -TimeoutSec 2
+        return ($response.StatusCode -eq 200)
+    } catch {
+        return $false
+    }
+}
+
+function Test-PortFree($PortToCheck) {
+    $listener = $null
+    try {
+        $address = [System.Net.IPAddress]::Parse("127.0.0.1")
+        $listener = New-Object System.Net.Sockets.TcpListener($address, $PortToCheck)
+        $listener.Start()
+        return $true
+    } catch {
+        return $false
+    } finally {
+        if ($null -ne $listener) {
+            $listener.Stop()
+        }
+    }
+}
+
+function Resolve-AppPort($PreferredPort) {
+    if (Test-AppHealth $PreferredPort) {
+        return [pscustomobject]@{ Port = $PreferredPort; AlreadyRunning = $true }
+    }
+    if (Test-PortFree $PreferredPort) {
+        return [pscustomobject]@{ Port = $PreferredPort; AlreadyRunning = $false }
+    }
+    foreach ($candidate in 8502..8520) {
+        if (Test-AppHealth $candidate) {
+            return [pscustomobject]@{ Port = $candidate; AlreadyRunning = $true }
+        }
+        if (Test-PortFree $candidate) {
+            return [pscustomobject]@{ Port = $candidate; AlreadyRunning = $false }
+        }
+    }
+    throw "No free local port was found between 8501 and 8520. Close old Streamlit windows and try again."
+}
+
 Write-Step "Finding a compatible Python version"
 $python = Find-CompatiblePython
 Write-Host "Using $($python.Text)"
@@ -127,7 +170,24 @@ if ($SmokeTest) {
 }
 
 Write-Step "Starting the app"
+$portInfo = Resolve-AppPort $Port
+$Port = [int]$portInfo.Port
 $url = "http://localhost:$Port"
+
+if ($portInfo.AlreadyRunning) {
+    Write-Host "The app is already running at $url"
+    Start-Process $url
+    Write-Host "Opened the existing local app. You can close this launcher window."
+    exit 0
+}
+
 Write-Host "Opening $url"
 Start-Job -ScriptBlock { param($TargetUrl) Start-Sleep -Seconds 4; Start-Process $TargetUrl } -ArgumentList $url | Out-Null
-Run-ProcessChecked $VenvPython @("-m", "streamlit", "run", "app.py", "--server.address", "127.0.0.1", "--server.port", "$Port", "--browser.gatherUsageStats", "false")
+& $VenvPython @("-m", "streamlit", "run", "app.py", "--server.address", "127.0.0.1", "--server.port", "$Port", "--browser.gatherUsageStats", "false")
+$streamlitExit = $LASTEXITCODE
+if ($streamlitExit -ne 0) {
+    Write-Host ""
+    Write-Host "Streamlit stopped with exit code $streamlitExit." -ForegroundColor Yellow
+    Write-Host "If you closed the server manually, this is safe to ignore. If it failed immediately, copy the messages above."
+}
+exit 0
