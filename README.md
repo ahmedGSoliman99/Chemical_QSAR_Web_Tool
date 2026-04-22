@@ -34,7 +34,6 @@ The modeling workflow uses scikit-learn pipelines with imputation, variance filt
 ```text
 Chemical_QSAR_Web_Tool/
   app.py
-  environment.yml
   requirements.txt
   packages.txt
   README.md
@@ -100,12 +99,12 @@ The easiest hosting option is Streamlit Community Cloud:
 3. Choose `New app`.
 4. Select this GitHub repository.
 5. Set the main file path to `app.py`.
-6. Open `Advanced settings` and choose Python `3.11` if the selector appears.
+6. Open `Advanced settings` and choose Python `3.12` first, or `3.11` if RDKit fails.
 7. Deploy.
 
 GitHub Pages can host the landing page in `docs/index.html`, but it cannot run the Python/RDKit Streamlit app. The actual interactive QSAR app needs Streamlit Cloud or another Python-capable host.
 
-This repository includes `environment.yml` for Streamlit Cloud. It requests Python 3.11 and RDKit from conda-forge, which avoids newer default Python runtimes that may not yet support all RDKit drawing modules. The `requirements.txt` file is kept for local Windows installation.
+This repository intentionally uses `requirements.txt` as the only Python dependency file for Streamlit Cloud. If an old Streamlit deployment was created with Python 3.14, delete that app and redeploy it with Python 3.12 or 3.11 because Streamlit does not change an app's Python runtime in place.
 
 ## Input File Formats
 
