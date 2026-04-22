@@ -1,10 +1,10 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title Chemical QSAR Web Tool - Local Launcher
+title ChemBlast - Local Launcher
 
 echo ============================================================
-echo  Chemical QSAR Web Tool
+echo  ChemBlast
 echo  Local Windows Launcher
 echo ============================================================
 echo.
@@ -25,3 +25,4 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
+

@@ -1,4 +1,4 @@
-﻿"""Chemical compound QSAR web app built with Streamlit and RDKit."""
+"""Chemical compound QSAR web app built with Streamlit and RDKit."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 from rdkit import Chem, DataStructs
-from rdkit.Chem import Crippen, Descriptors, Fragments, Lipinski, MACCSkeys, QED, rdFMCS, rdFingerprintGenerator, rdMolDescriptors
+from rdkit.Chem import AllChem, Crippen, Descriptors, Fragments, Lipinski, MACCSkeys, QED, rdFMCS, rdFingerprintGenerator, rdMolDescriptors
 from rdkit.Chem.Scaffolds import MurckoScaffold
 from sklearn.base import clone
 from sklearn.decomposition import PCA
@@ -30,7 +30,7 @@ from sklearn.ensemble import (
     RandomForestClassifier,
     RandomForestRegressor,
 )
-from sklearn.feature_selection import VarianceThreshold
+from sklearn.feature_selection import SelectPercentile, VarianceThreshold, f_classif, f_regression
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import ElasticNet, Lasso, LinearRegression, LogisticRegression, Ridge
 from sklearn.metrics import (
@@ -44,7 +44,7 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
-from sklearn.model_selection import KFold, StratifiedKFold, cross_val_score, train_test_split
+from sklearn.model_selection import KFold, RepeatedKFold, StratifiedKFold, cross_val_score, train_test_split
 from sklearn.naive_bayes import GaussianNB
 from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
 from sklearn.neural_network import MLPClassifier, MLPRegressor
@@ -56,10 +56,23 @@ from sklearn.svm import SVC, SVR
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 PLOT_TEMPLATE = "plotly_white"
+APP_NAME = "ChemBlast"
+DEVELOPER_NAME = "Ahmed G. Soliman"
+DEVELOPER_PORTFOLIO = "https://sites.google.com/view/ahmed-g-soliman/home"
+DEVELOPER_PROFILE = {
+    "Developer": DEVELOPER_NAME,
+    "Current role": "MEXT master's student at Kyutech, Japan, School of Life Science and Engineering",
+    "Background": "Biotechnology Program, Faculty of Agriculture, Ain Shams University, Cairo, Egypt",
+    "Experience": "Previous instructor at ACGEB in in-silico drug design and immune-informatics",
+    "Scopus ID": "58569160700",
+    "ResearcherID (WOS)": "ABE-8406-2021",
+    "ORCID": "0000-0002-1122-3993",
+    "Portfolio": DEVELOPER_PORTFOLIO,
+}
 
 
 st.set_page_config(
-    page_title="Chemical QSAR Web Tool",
+    page_title=APP_NAME,
     page_icon="C",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -107,6 +120,7 @@ class DescriptorOptions:
     include_full_rdkit: bool = True
     include_functional_groups: bool = True
     include_element_counts: bool = True
+    include_3d: bool = True
 
 
 def clean_smiles(value: Any) -> str:
@@ -137,6 +151,40 @@ def mol_from_smiles(smiles: str) -> Chem.Mol | None:
         return None
     Chem.SanitizeMol(mol)
     return mol
+
+
+def molecule_has_3d_coordinates(mol: Chem.Mol) -> bool:
+    if mol is None or mol.GetNumConformers() == 0:
+        return False
+    conf = mol.GetConformer()
+    for idx in range(mol.GetNumAtoms()):
+        pos = conf.GetAtomPosition(idx)
+        if abs(pos.z) > 1e-3:
+            return True
+    return False
+
+
+def mol_with_3d_from_smiles(smiles: str) -> tuple[Chem.Mol | None, str]:
+    mol = mol_from_smiles(smiles)
+    if mol is None:
+        return None, "Invalid SMILES"
+    mol = Chem.AddHs(mol)
+    params = AllChem.ETKDGv3()
+    params.randomSeed = 42
+    params.useSmallRingTorsions = True
+    status = AllChem.EmbedMolecule(mol, params)
+    if status != 0:
+        status = AllChem.EmbedMolecule(mol, randomSeed=42, useRandomCoords=True)
+    if status != 0:
+        return None, "3D embedding failed"
+    try:
+        if AllChem.MMFFHasAllMoleculeParams(mol):
+            AllChem.MMFFOptimizeMolecule(mol, maxIters=300)
+        else:
+            AllChem.UFFOptimizeMolecule(mol, maxIters=300)
+    except Exception:
+        pass
+    return mol, "ETKDG 3D conformer generated"
 
 
 def read_sdf_bytes(file_bytes: bytes) -> pd.DataFrame:
@@ -323,6 +371,96 @@ def element_descriptors(mol: Chem.Mol) -> dict[str, float]:
     return out
 
 
+def descriptors_3d_from_smiles(smiles: str) -> dict[str, float]:
+    mol3d, status = mol_with_3d_from_smiles(smiles)
+    out: dict[str, float] = {
+        "3D_EmbedSuccess": 1.0 if mol3d is not None else 0.0,
+        "3D_StatusCode": 1.0 if mol3d is not None and "generated" in status.lower() else 0.0,
+    }
+    descriptor_funcs = {
+        "3D_Asphericity": getattr(rdMolDescriptors, "CalcAsphericity", None),
+        "3D_Eccentricity": getattr(rdMolDescriptors, "CalcEccentricity", None),
+        "3D_InertialShapeFactor": getattr(rdMolDescriptors, "CalcInertialShapeFactor", None),
+        "3D_NPR1": getattr(rdMolDescriptors, "CalcNPR1", None),
+        "3D_NPR2": getattr(rdMolDescriptors, "CalcNPR2", None),
+        "3D_PMI1": getattr(rdMolDescriptors, "CalcPMI1", None),
+        "3D_PMI2": getattr(rdMolDescriptors, "CalcPMI2", None),
+        "3D_PMI3": getattr(rdMolDescriptors, "CalcPMI3", None),
+        "3D_RadiusOfGyration": getattr(rdMolDescriptors, "CalcRadiusOfGyration", None),
+        "3D_SpherocityIndex": getattr(rdMolDescriptors, "CalcSpherocityIndex", None),
+        "3D_PBF": getattr(rdMolDescriptors, "CalcPBF", None),
+    }
+    for name in descriptor_funcs:
+        out[name] = 0.0
+    if mol3d is None:
+        return out
+    for name, func in descriptor_funcs.items():
+        if func is None:
+            continue
+        try:
+            value = safe_float(func(mol3d))
+        except Exception:
+            value = None
+        out[name] = value if value is not None else 0.0
+    return out
+
+
+def plot_molecule_3d(smiles: str) -> tuple[go.Figure, str]:
+    mol3d, status = mol_with_3d_from_smiles(smiles)
+    if mol3d is None:
+        return px.scatter_3d(title=f"3D structure unavailable: {status}", template=PLOT_TEMPLATE), status
+    conf = mol3d.GetConformer()
+    atoms = []
+    for atom in mol3d.GetAtoms():
+        pos = conf.GetAtomPosition(atom.GetIdx())
+        atoms.append(
+            {
+                "Atom": atom.GetSymbol(),
+                "Index": atom.GetIdx(),
+                "x": pos.x,
+                "y": pos.y,
+                "z": pos.z,
+                "AtomicNum": atom.GetAtomicNum(),
+            }
+        )
+    atom_df = pd.DataFrame(atoms)
+    fig = go.Figure()
+    for bond in mol3d.GetBonds():
+        begin = conf.GetAtomPosition(bond.GetBeginAtomIdx())
+        end = conf.GetAtomPosition(bond.GetEndAtomIdx())
+        fig.add_trace(
+            go.Scatter3d(
+                x=[begin.x, end.x],
+                y=[begin.y, end.y],
+                z=[begin.z, end.z],
+                mode="lines",
+                line=dict(color="#7a8b8f", width=5),
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+    fig.add_trace(
+        go.Scatter3d(
+            x=atom_df["x"],
+            y=atom_df["y"],
+            z=atom_df["z"],
+            mode="markers+text",
+            text=atom_df["Atom"],
+            textposition="top center",
+            marker=dict(size=np.clip(atom_df["AtomicNum"] * 1.8, 6, 20), color=atom_df["AtomicNum"], colorscale="Viridis", line=dict(width=1, color="#102a2d")),
+            hovertemplate="%{text}<br>x=%{x:.2f}<br>y=%{y:.2f}<br>z=%{z:.2f}<extra></extra>",
+            name="Atoms",
+        )
+    )
+    fig.update_layout(
+        template=PLOT_TEMPLATE,
+        title="3D conformer view (ETKDG/MMFF or UFF optimized)",
+        scene=dict(xaxis_title="X", yaxis_title="Y", zaxis_title="Z", aspectmode="data"),
+        margin=dict(l=0, r=0, t=45, b=0),
+    )
+    return fig, status
+
+
 def bitvect_to_dict(prefix: str, bitvect: Any, n_bits: int | None = None) -> dict[str, float]:
     if n_bits is None:
         n_bits = bitvect.GetNumBits()
@@ -348,6 +486,8 @@ def calculate_descriptors(df: pd.DataFrame, options: DescriptorOptions) -> pd.Da
             data.update(all_rdkit_descriptors(mol))
         if options.include_functional_groups:
             data.update(functional_group_descriptors(mol))
+        if options.include_3d:
+            data.update(descriptors_3d_from_smiles(smiles))
         if options.include_morgan:
             generator = rdFingerprintGenerator.GetMorganGenerator(radius=options.morgan_radius, fpSize=options.morgan_bits)
             fp = generator.GetFingerprint(mol)
@@ -375,6 +515,7 @@ def infer_descriptor_options(features: list[str]) -> DescriptorOptions:
         include_full_rdkit=any(feature.startswith("RDKit_") for feature in features),
         include_functional_groups=any(feature.startswith("FG_") for feature in features),
         include_element_counts=any(feature.startswith("Elem_") for feature in features),
+        include_3d=any(feature.startswith("3D_") for feature in features),
     )
 
 
@@ -459,6 +600,42 @@ def infer_direction(target: str) -> str:
     return "higher"
 
 
+def positive_lower_better_score(values: Any) -> pd.Series:
+    """Convert lower-is-better predictions into a positive, monotonic design score."""
+    raw = pd.Series(pd.to_numeric(values, errors="coerce"), dtype=float)
+    score = pd.Series(np.nan, index=raw.index, dtype=float)
+    valid = raw.dropna()
+    if valid.empty:
+        return score
+
+    vmin = float(valid.min())
+    vmax = float(valid.max())
+    if len(valid) > 1 and not math.isclose(vmin, vmax):
+        score.loc[valid.index] = 100.0 * (vmax - valid) / (vmax - vmin)
+    else:
+        single = valid.copy()
+        # Docking-like values are often negative; positive assay units are better represented as inverse scores.
+        score.loc[single.index] = np.where(single <= 0, -single, 100.0 / (1.0 + single))
+    return score.clip(lower=0.0)
+
+
+def normalized_score(values: Any, higher_is_better: bool = True) -> pd.Series:
+    raw = pd.Series(pd.to_numeric(values, errors="coerce"), dtype=float)
+    out = pd.Series(np.nan, index=raw.index, dtype=float)
+    valid = raw.dropna()
+    if valid.empty:
+        return out
+    vmin = float(valid.min())
+    vmax = float(valid.max())
+    if math.isclose(vmin, vmax):
+        out.loc[valid.index] = 100.0
+    elif higher_is_better:
+        out.loc[valid.index] = 100.0 * (valid - vmin) / (vmax - vmin)
+    else:
+        out.loc[valid.index] = 100.0 * (vmax - valid) / (vmax - vmin)
+    return out.clip(lower=0.0, upper=100.0)
+
+
 def prepare_xy(df: pd.DataFrame, features: list[str], target: str, task_type: str) -> tuple[pd.DataFrame, pd.Series, LabelEncoder | None]:
     X = df[features].replace([np.inf, -np.inf], np.nan)
     y_raw = df[target]
@@ -486,9 +663,12 @@ def evaluate_models(df: pd.DataFrame, features: list[str], target: str, task_typ
 
     for name in selected_models:
         estimator = clone(catalog[name])
+        score_func = f_regression if task_type == "Regression" else f_classif
+        selector_percentile = 25 if len(features) > 80 else 100
         pipe = Pipeline([
             ("imputer", SimpleImputer(strategy="median")),
             ("variance", VarianceThreshold(threshold=0.0)),
+            ("selector", SelectPercentile(score_func=score_func, percentile=selector_percentile)),
             ("scaler", StandardScaler()),
             ("model", estimator),
         ])
@@ -501,10 +681,14 @@ def evaluate_models(df: pd.DataFrame, features: list[str], target: str, task_typ
                 "RMSE": float(math.sqrt(mean_squared_error(y_test, pred))),
                 "MAE": float(mean_absolute_error(y_test, pred)),
             }
-            cv = KFold(n_splits=min(cv_folds, len(X)), shuffle=True, random_state=42)
+            n_splits = min(max(2, cv_folds), max(2, len(X) // 2))
+            cv = RepeatedKFold(n_splits=n_splits, n_repeats=5, random_state=42)
             cv_score = cross_val_score(pipe, X, y, cv=cv, scoring="r2")
-            metrics["CV_R2_mean"] = float(np.mean(cv_score))
-            primary = metrics["R2"]
+            cv_rmse = -cross_val_score(pipe, X, y, cv=cv, scoring="neg_root_mean_squared_error")
+            metrics["CV_R2_mean"] = float(np.nanmean(cv_score))
+            metrics["CV_R2_std"] = float(np.nanstd(cv_score))
+            metrics["CV_RMSE_mean"] = float(np.nanmean(cv_rmse))
+            primary = metrics["CV_R2_mean"] if math.isfinite(metrics["CV_R2_mean"]) else metrics["R2"]
         else:
             proba = pipe.predict_proba(X_test) if hasattr(pipe, "predict_proba") else None
             average = "binary" if y.nunique() == 2 else "weighted"
@@ -520,13 +704,16 @@ def evaluate_models(df: pd.DataFrame, features: list[str], target: str, task_typ
             if cv is not None:
                 cv_score = cross_val_score(pipe, X, y, cv=cv, scoring="f1_weighted")
                 metrics["CV_F1_mean"] = float(np.mean(cv_score))
-            primary = metrics["F1"]
+            primary = metrics.get("CV_F1_mean", metrics["F1"])
 
         domain_features = [col for col in features if not col.startswith(("Morgan_", "MACCS_"))]
-        row = {"Model": name, **metrics}
+        fit_quality = max(0.0, min(100.0, 100.0 * primary)) if math.isfinite(float(primary)) else 0.0
+        row = {"Model": name, **metrics, "SelectionScore": float(primary), "FitQuality_0_100": fit_quality}
         rows.append(row)
+        final_pipe = clone(pipe)
+        final_pipe.fit(X, y)
         bundles[name] = {
-            "pipeline": pipe,
+            "pipeline": final_pipe,
             "model_name": name,
             "features": features,
             "target": target,
@@ -541,7 +728,7 @@ def evaluate_models(df: pd.DataFrame, features: list[str], target: str, task_typ
         }
 
     leaderboard = pd.DataFrame(rows)
-    sort_metric = "R2" if task_type == "Regression" else "F1"
+    sort_metric = "SelectionScore"
     leaderboard = leaderboard.sort_values(sort_metric, ascending=False).reset_index(drop=True)
     best_name = leaderboard.loc[0, "Model"]
     return {"leaderboard": leaderboard, "bundles": bundles, "best_name": best_name, "best": bundles[best_name]}
@@ -553,6 +740,12 @@ def model_feature_importance(bundle: dict[str, Any]) -> pd.DataFrame:
     features = np.array(bundle["features"])
     support = pipe.named_steps["variance"].get_support()
     used_features = features[support]
+    selector = pipe.named_steps.get("selector")
+    if selector is not None and hasattr(selector, "get_support"):
+        try:
+            used_features = used_features[selector.get_support()]
+        except Exception:
+            pass
     if hasattr(model, "feature_importances_"):
         values = model.feature_importances_
     elif hasattr(model, "coef_"):
@@ -620,8 +813,22 @@ def predict_new(bundle: dict[str, Any], df: pd.DataFrame, direction: str) -> pd.
     pred = bundle["pipeline"].predict(X)
     out = df[["Name", "SMILES"]].copy()
     if bundle["task_type"] == "Regression":
-        out["Prediction"] = pred
-        out["RankingScore"] = -pred if direction == "lower" else pred
+        raw_pred = pd.Series(pd.to_numeric(pred, errors="coerce"), index=out.index, dtype=float)
+        if direction == "lower":
+            optimized = positive_lower_better_score(raw_pred)
+            out["Prediction"] = optimized
+            out["RawModelPrediction"] = raw_pred
+            out["PredictionMeaning"] = (
+                "Positive optimized score; higher is better. "
+                "Raw lower-is-better model output is stored in RawModelPrediction."
+            )
+            out["RankingScore"] = optimized
+            out["NormalizedScore_0_100"] = normalized_score(raw_pred, higher_is_better=False)
+        else:
+            out["Prediction"] = raw_pred
+            out["PredictionMeaning"] = "Predicted target value; higher is better."
+            out["RankingScore"] = raw_pred
+            out["NormalizedScore_0_100"] = normalized_score(raw_pred, higher_is_better=True)
     else:
         encoder = bundle["label_encoder"]
         labels = encoder.inverse_transform(pred.astype(int)) if encoder is not None else pred
@@ -630,6 +837,8 @@ def predict_new(bundle: dict[str, Any], df: pd.DataFrame, direction: str) -> pd.
             proba = bundle["pipeline"].predict_proba(X)
             out["MaxProbability"] = np.max(proba, axis=1)
             out["RankingScore"] = out["MaxProbability"]
+        else:
+            out["RankingScore"] = 0.0
     return out.sort_values("RankingScore", ascending=False).reset_index(drop=True)
 
 
@@ -933,7 +1142,7 @@ def generate_html_report() -> str:
 <html lang=\"en\">
 <head>
   <meta charset=\"utf-8\">
-  <title>Chemical QSAR Web Tool Report</title>
+  <title>ChemBlast Report</title>
   <style>
     body {{ font-family: Arial, sans-serif; color: #153235; margin: 42px; line-height: 1.5; }}
     h1 {{ color: #073b3d; }}
@@ -944,9 +1153,9 @@ def generate_html_report() -> str:
   </style>
 </head>
 <body>
-  <h1>Chemical QSAR Web Tool Report</h1>
+  <h1>ChemBlast Report</h1>
   <p>Generated: {timestamp}</p>
-  <p>This report summarizes RDKit descriptor calculation, model comparison, drug-likeness checks, and prediction outputs created in the web app.</p>
+  <p>This report summarizes RDKit 2D/3D descriptor calculation, model comparison, drug-likeness checks, and prediction outputs created in ChemBlast.</p>
   {body}
 </body>
 </html>"""
@@ -974,16 +1183,17 @@ def render_home() -> None:
     st.markdown(
         """
 <div class="chem-hero">
-  <h1>Chemical QSAR Web Tool</h1>
-  <p>Web-only QSAR platform for small molecules: SMILES/SDF input, RDKit descriptors, fingerprints, ML models, visualizations, and browser-based prediction.</p>
+  <h1>ChemBlast</h1>
+  <p>Developer-built chemical QSAR platform for small molecules: SMILES/SDF input, 2D and 3D RDKit descriptors, fingerprints, ML models, visualizations, and browser-based prediction.</p>
 </div>
         """,
         unsafe_allow_html=True,
     )
     c1, c2, c3 = st.columns(3)
     c1.metric("Input", "SMILES / SDF / CSV")
-    c2.metric("Descriptors", "RDKit + Fingerprints")
+    c2.metric("Descriptors", "2D + 3D RDKit")
     c3.metric("Models", "Regression + Classification")
+    st.caption(f"Developed by {DEVELOPER_NAME}.")
     st.info("Start with the example dataset, or upload your own molecules with a target column such as IC50, pIC50, DockingScore, LogS, Toxicity, or ActivityClass. The built-in Demo_pIC50 endpoint is synthetic and is included only to test the QSAR workflow.")
 
 
@@ -1041,10 +1251,11 @@ def render_descriptors() -> None:
     include_maccs = c2.checkbox("MACCS keys", value=False)
     morgan_bits = c3.selectbox("Morgan bits", [256, 512, 1024, 2048], index=2)
     with st.expander("Descriptor families", expanded=True):
-        d1, d2, d3 = st.columns(3)
+        d1, d2, d3, d4 = st.columns(4)
         include_full_rdkit = d1.checkbox("All RDKit descriptors", value=True, help="Adds the complete numeric RDKit descriptor list where available.")
         include_functional_groups = d2.checkbox("Functional group counts", value=True, help="Adds RDKit fragment counters such as amide, ester, phenol, carboxylic acid, halogen, nitro, and more.")
         include_element_counts = d3.checkbox("Element counts", value=True, help="Adds atom/heteroatom counts and element fractions.")
+        include_3d = d4.checkbox("3D conformer descriptors", value=True, help="Generates ETKDG 3D conformers and adds shape descriptors such as PMI, NPR, radius of gyration, asphericity, and spherocity.")
     if st.button("Calculate Descriptors", type="primary", use_container_width=True):
         with st.spinner("Calculating RDKit descriptors and fingerprints..."):
             options = DescriptorOptions(
@@ -1054,6 +1265,7 @@ def render_descriptors() -> None:
                 include_full_rdkit=include_full_rdkit,
                 include_functional_groups=include_functional_groups,
                 include_element_counts=include_element_counts,
+                include_3d=include_3d,
             )
             st.session_state.desc_df = calculate_descriptors(valid, options)
             st.session_state.features = descriptor_columns(st.session_state.desc_df)
@@ -1123,8 +1335,10 @@ def render_modeling() -> None:
     if isinstance(result, dict):
         leaderboard = result["leaderboard"]
         st.dataframe(leaderboard, use_container_width=True)
-        metric = "R2" if task_type == "Regression" else "F1"
+        metric = "FitQuality_0_100" if task_type == "Regression" and "FitQuality_0_100" in leaderboard.columns else ("R2" if task_type == "Regression" else "F1")
         st.plotly_chart(px.bar(leaderboard, x="Model", y=metric, template=PLOT_TEMPLATE, title="Model Leaderboard"), use_container_width=True, key="leaderboard")
+        if task_type == "Regression" and metric == "FitQuality_0_100":
+            st.caption("Model selection uses repeated cross-validation when possible. FitQuality_0_100 is a non-negative summary score; keep checking R2/RMSE for scientific reporting.")
         if task_type == "Regression" and "R2" in leaderboard.columns and leaderboard["R2"].max() < 0:
             st.warning("All test-set R2 values are negative. This usually means the dataset is too small, noisy, or chemically inconsistent for the chosen split/features. Try the recommended feature set, add more compounds, or use cross-validation/external validation.")
 
@@ -1173,6 +1387,11 @@ def render_predict() -> None:
         pred_file = st.file_uploader("Or upload prediction CSV, Excel, TXT, or SDF", type=["csv", "xlsx", "xls", "txt", "sdf", "sd"], key="prediction_upload")
     direction = infer_direction(bundle["target"])
     direction = st.selectbox("Ranking direction for regression", ["higher", "lower"], index=0 if direction == "higher" else 1)
+    if bundle.get("task_type") == "Regression" and direction == "lower":
+        st.info(
+            "For lower-is-better targets such as DockingScore, IC50, MIC, Ki, or binding energy, "
+            "`Prediction` is shown as a positive optimized design score. The original model output remains in `RawModelPrediction`."
+        )
     if st.button("Predict New Molecules", type="primary", use_container_width=True):
         if pred_file is not None:
             new_df = read_uploaded_file(pred_file)
@@ -1220,6 +1439,48 @@ def render_predict() -> None:
                     st.caption(row["Name"])
                     st.code(row["SMILES"], language="text")
         dataframe_download(pred, "compound_predictions.csv", key_prefix="predict_tab")
+
+
+def render_molecule_viewer() -> None:
+    st.subheader("Molecule Drawing & 3D Viewer")
+    desc = st.session_state.desc_df
+    example_smiles = "CC(=O)Oc1ccccc1C(=O)O"
+    options: list[str] = []
+    if isinstance(desc, pd.DataFrame) and not desc.empty and "SMILES" in desc.columns:
+        options = [f"{row.get('Name', f'Molecule_{idx+1}')} | {row['SMILES']}" for idx, row in desc.head(250).iterrows()]
+
+    source = st.radio("Molecule source", ["Type SMILES", "Select from loaded data"], horizontal=True)
+    if source == "Select from loaded data" and options:
+        selected = st.selectbox("Loaded molecule", options)
+        smiles = selected.split(" | ", 1)[1]
+    else:
+        smiles = st.text_input("SMILES", value=example_smiles, help="Paste a SMILES string to draw 2D and generate an approximate 3D conformer.")
+
+    mol = mol_from_smiles(smiles)
+    if mol is None:
+        st.warning("Enter a valid SMILES string.")
+        return
+
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        st.markdown("#### 2D drawing")
+        image_uri = mol_png_data_uri(smiles, size=(360, 260))
+        if image_uri:
+            st.image(image_uri)
+        else:
+            st.code(Chem.MolToSmiles(mol), language="text")
+        st.write("Canonical SMILES")
+        st.code(Chem.MolToSmiles(mol), language="text")
+
+    with c2:
+        st.markdown("#### 3D conformer")
+        fig, status = plot_molecule_3d(smiles)
+        st.caption(status)
+        st.plotly_chart(fig, use_container_width=True, key="molecule_3d_viewer")
+
+    desc3d = descriptors_3d_from_smiles(smiles)
+    st.markdown("#### 3D shape descriptors")
+    st.dataframe(pd.DataFrame([desc3d]).T.reset_index().rename(columns={"index": "Descriptor", 0: "Value"}), use_container_width=True, hide_index=True)
 
 
 def render_alignment_design() -> None:
@@ -1389,14 +1650,17 @@ def render_export() -> None:
 
 
 def render_about() -> None:
-    st.subheader("About")
+    st.subheader("About ChemBlast")
+    st.markdown("### Developed by Ahmed G. Soliman")
+    st.dataframe(pd.DataFrame(DEVELOPER_PROFILE.items(), columns=["Item", "Details"]), use_container_width=True, hide_index=True)
     st.markdown(
         """
-This web-only tool uses RDKit for chemical descriptor and fingerprint calculation and scikit-learn for QSAR modeling.
+ChemBlast uses RDKit for 2D/3D chemical descriptor and fingerprint calculation and scikit-learn for QSAR modeling.
 
 Scientific basis:
 
 - Molecular descriptors summarize physicochemical properties such as molecular weight, LogP, TPSA, H-bond donors/acceptors, rings, rotatable bonds, aromaticity, complexity, QED, and partial-charge summaries.
+- 3D conformer descriptors are generated from ETKDG conformers and summarize molecular shape using PMI, NPR, radius of gyration, asphericity, eccentricity, spherocity, and related geometric descriptors when embedding succeeds.
 - Morgan fingerprints encode circular atom environments and are widely used for ligand similarity and QSAR modeling.
 - MACCS keys encode predefined structural fragments.
 - QSAR models learn statistical relationships between descriptors/fingerprints and biological activity or chemical properties.
@@ -1408,13 +1672,14 @@ Limitations:
 - Applicability domain and external validation are strongly recommended.
         """
     )
+    st.link_button("Open developer portfolio", DEVELOPER_PORTFOLIO, use_container_width=True)
 
 
 def main() -> None:
     init_state()
-    st.sidebar.title("Chemical QSAR")
-    st.sidebar.caption("Web-only molecular QSAR workflow")
-    tabs = st.tabs(["Home", "Input", "Descriptors", "Train Model", "Evaluate", "Predict", "Alignment & Design", "Visualizations", "Export", "About"])
+    st.sidebar.title(APP_NAME)
+    st.sidebar.caption(f"Developed by {DEVELOPER_NAME}")
+    tabs = st.tabs(["Home", "Input", "Descriptors", "Train Model", "Evaluate", "Predict", "Molecule Viewer", "Alignment & Design", "Visualizations", "Export", "About"])
     with tabs[0]:
         render_home()
     with tabs[1]:
@@ -1428,12 +1693,14 @@ def main() -> None:
     with tabs[5]:
         render_predict()
     with tabs[6]:
-        render_alignment_design()
+        render_molecule_viewer()
     with tabs[7]:
-        render_visuals()
+        render_alignment_design()
     with tabs[8]:
-        render_export()
+        render_visuals()
     with tabs[9]:
+        render_export()
+    with tabs[10]:
         render_about()
 
 

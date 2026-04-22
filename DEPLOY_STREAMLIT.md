@@ -1,4 +1,4 @@
-# Deploy The Chemical QSAR Web Tool On Streamlit Cloud
+# Deploy ChemBlast On Streamlit Cloud
 
 This project is designed as a web-only Streamlit app. It does not need an EXE file.
 

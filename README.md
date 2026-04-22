@@ -1,4 +1,4 @@
-# Chemical QSAR Web Tool
+# ChemBlast
 
 A web-only QSAR platform for chemical compounds and drug-like molecules. The app is built with Streamlit, RDKit, scikit-learn, and Plotly so non-programmers can upload molecules, calculate descriptors, train machine-learning models, visualize chemical space, and predict new compounds from a browser.
 
@@ -172,6 +172,7 @@ Classification models:
 Prepared for Ahmed G. Soliman.
 
 Developer website: https://sites.google.com/view/ahmed-g-soliman/home
+
 
 
 
